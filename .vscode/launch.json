@@ -1,0 +1,26 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "train yolov7",
+            "type": "python",
+            "request": "launch",
+            "program": "train.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": ["--workers", "8", "--device", "0", "--batch-size", "16", "--data", "data/ratones.yaml", "--img", "640", "640", "--cfg", "cfg/training/yolov7-tiny-ratones.yaml", "--weights", "yolov7-tiny.pt", "--name", "yolov7-custom", "--hyp", "data/hyp.scratch.custom.yaml", "--v5-metric"]
+        },
+        {
+            "name": "detect yolov7",
+            "type": "python",
+            "request": "launch",
+            "program": "detect.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": ["--weights", "runs/train/yolov7-custom17/weights/best.pt", "--conf", "0.5", "--img-size", "320", "--source", "/home/andy/Videos/ratones_youtube_test/Night camera trap- A mouse in the garden.mp4", "--view-img"]
+        }
+    ]
+}
