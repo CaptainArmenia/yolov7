@@ -25,6 +25,7 @@ from copy import deepcopy
 #from pycocotools import mask as maskUtils
 from torchvision.utils import save_image
 from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
+import albumentations as A
 
 from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
     resample_segments, clean_str
@@ -63,7 +64,7 @@ def exif_size(img):
 
 
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix=''):
+                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='', shuffle=False):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
@@ -87,7 +88,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                         num_workers=nw,
                         sampler=sampler,
                         pin_memory=True,
-                        collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn)
+                        collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn,
+                        shuffle=shuffle)
     return dataloader, dataset
 
 
@@ -362,7 +364,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
         self.path = path        
-        #self.albumentations = Albumentations() if augment else None
+        self.albumentations = Albumentations() if augment else None
 
         try:
             f = []  # image files
@@ -415,7 +417,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 x[:, 0] = 0
 
         n = len(shapes)  # number of images
-        bi = np.floor(np.arange(n) / batch_size).astype(int)  # batch index
+        bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
         nb = bi[-1] + 1  # number of batches
         self.batch = bi  # batch index of image
         self.n = n
@@ -443,7 +445,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
 
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int) * stride
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
@@ -506,7 +508,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 x[im_file] = [l, shape, segments]
             except Exception as e:
                 nc += 1
-                print(f'{prefix}WARNING: Ignoring corrupted image and/or label {im_file}: {e}')
+                #print(f'{prefix}WARNING: Ignoring corrupted image and/or label {im_file}: {e}')
 
             pbar.desc = f"{prefix}Scanning '{path.parent / path.stem}' images and labels... " \
                         f"{nf} found, {nm} missing, {ne} empty, {nc} corrupted"
@@ -557,15 +559,23 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         else:
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
-
-            # Letterbox
-            shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
-            shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
-
             labels = self.labels[index].copy()
-            if labels.size:  # normalized xywh to pixel xyxy format
-                labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+            ratio = (1, 1)
+            pad = (0.0, 0.0)
+            
+            if min(h, w) < self.img_size:
+                # Letterbox
+                shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+                img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+                if labels.size: # normalized xywh to pixel xyxy format
+                    labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+            else:
+                if labels.size: # normalized xywh to pixel xyxy format
+                    labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+                img, labels = cropped_resize(img, labels)
+
+            shapes = (h0, w0), ((h / h0, w / w0), pad)
+                    
 
         if self.augment:
             # Augment imagespace
@@ -672,9 +682,9 @@ def load_image(self, index):
         assert img is not None, 'Image Not Found ' + path
         h0, w0 = img.shape[:2]  # orig hw
         r = self.img_size / max(h0, w0)  # resize image to img_size
-        if r != 1:  # always resize down, only resize up if training with augmentation
-            interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
-            img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        # if r != 1:  # always resize down, only resize up if training with augmentation
+        #     interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
+        #     img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
         return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
     else:
         return self.imgs[index], self.img_hw0[index], self.img_hw[index]  # img, hw_original, hw_resized
@@ -1200,7 +1210,7 @@ def pastein(image, labels, sample_labels, sample_images, sample_masks):
                 r_image = cv2.resize(sample_images[sel_ind], (r_w, r_h))
                 temp_crop = image[ymin:ymin+r_h, xmin:xmin+r_w]
                 m_ind = r_mask > 0
-                if m_ind.astype(np.int32).sum() > 60:
+                if m_ind.astype(np.int).sum() > 60:
                     temp_crop[m_ind] = r_image[m_ind]
                     #print(sample_labels[sel_ind])
                     #print(sample_images[sel_ind].shape)
@@ -1215,11 +1225,21 @@ def pastein(image, labels, sample_labels, sample_images, sample_masks):
 
     return labels
 
+
+def cropped_resize(im, labels):
+    transform = A.Compose([A.RandomCrop(height=640, width=640, p=1.0)],
+            bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels']))
+
+    new = transform(image=im, bboxes=labels[:, 1:], class_labels=labels[:, 0])  # transformed
+    im, labels = new['image'], np.array([[c, *b] for c, b in zip(new['class_labels'], new['bboxes'])])
+
+    return im, labels
+
 class Albumentations:
     # YOLOv5 Albumentations class (optional, only used if package is installed)
     def __init__(self):
         self.transform = None
-        import albumentations as A
+        
 
         self.transform = A.Compose([
             A.CLAHE(p=0.01),
@@ -1228,7 +1248,7 @@ class Albumentations:
             A.Blur(p=0.01),
             A.MedianBlur(p=0.01),
             A.ToGray(p=0.01),
-            A.ImageCompression(quality_lower=75, p=0.01),],
+            A.ImageCompression(quality_lower=75, p=0.01)],
             bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels']))
 
             #logging.info(colorstr('albumentations: ') + ', '.join(f'{x}' for x in self.transform.transforms if x.p))
