@@ -11,7 +11,7 @@
             "program": "train.py",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "args": ["--workers", "8", "--device", "0", "--batch-size", "16", "--data", "data/ratones.yaml", "--img", "640", "640", "--cfg", "cfg/training/yolov7-tiny-ratones.yaml", "--weights", "yolov7-tiny.pt", "--name", "yolov7-custom", "--hyp", "data/hyp.scratch.custom.yaml", "--v5-metric"]
+            "args": ["--workers", "8", "--device", "0", "--batch-size", "32", "--data", "data/ratones.yaml", "--img", "320", "320", "--cfg", "cfg/training/yolov7-tiny-ratones.yaml", "--weights", "yolov7-tiny.pt", "--name", "yolov7-custom", "--hyp", "data/hyp.scratch.custom.yaml", "--v5-metric", "--cache-images", "--resume"]
         },
         {
             "name": "detect yolov7",
@@ -20,7 +20,8 @@
             "program": "detect.py",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "args": ["--weights", "runs/train/yolov7-custom17/weights/best.pt", "--conf", "0.5", "--img-size", "320", "--source", "/home/andy/Videos/ratones_youtube_test/Night camera trap- A mouse in the garden.mp4", "--view-img"]
+            "args": ["--weights", "runs/train/yolov7-custom107/weights/best.pt", "--conf", "0.8", "--img-size", "320", "--source", "/home/andy/Videos/ratones_youtube_test/", "--view-img"]
+            //"args": ["--weights", "best.pt", "--conf", "0.1", "--img-size", "640", "--source", "/home/andy/Videos/ratones_youtube_test/y2mate.com - Mouse captured on camera tidying up mans shed ITV News_1080p.mp4", "--view-img"]
         }
     ]
 }

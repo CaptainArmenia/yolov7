@@ -134,7 +134,10 @@ def detect(save_img=False):
             # Stream results
             if view_img:
                 cv2.imshow(str(p), im0)
-                cv2.waitKey(1)  # 1 millisecond
+                k = cv2.waitKey(1)  # 1 millisecond
+                if k == ord('q'):
+                    amount_of_frames = dataset.cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                    dataset.cap.set(cv2.CAP_PROP_POS_FRAMES, amount_of_frames - 1)
 
             # Save results (image with detections)
             if save_img:

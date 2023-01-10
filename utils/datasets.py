@@ -19,6 +19,11 @@ import torch.nn.functional as F
 from PIL import Image, ExifTags
 from torch.utils.data import Dataset
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+
+# enable matplotlib gui backend
+import matplotlib
+matplotlib.use('TkAgg')
 
 import pickle
 from copy import deepcopy
@@ -26,6 +31,8 @@ from copy import deepcopy
 from torchvision.utils import save_image
 from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
 import albumentations as A
+from albumentations.core.transforms_interface import DualTransform
+from albumentations.core.bbox_utils import union_of_bboxes
 
 from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
     resample_segments, clean_str
@@ -364,7 +371,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
         self.path = path        
-        self.albumentations = Albumentations() if augment else None
+        #self.albumentations = Albumentations() if augment else None
 
         try:
             f = []  # image files
@@ -562,6 +569,12 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             labels = self.labels[index].copy()
             ratio = (1, 1)
             pad = (0.0, 0.0)
+
+            # # Letterbox
+            # shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+            # img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            # if labels.size: # normalized xywh to pixel xyxy format
+            #     labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
             
             if min(h, w) < self.img_size:
                 # Letterbox
@@ -570,9 +583,12 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 if labels.size: # normalized xywh to pixel xyxy format
                     labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
             else:
+                #r = min(h / h0, w / w0)
+                #ratio = r, r
                 if labels.size: # normalized xywh to pixel xyxy format
                     labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
-                img, labels = cropped_resize(img, labels)
+                img, labels = cropped_resize(img, labels, self.img_size)
+                h, w = img.shape[:2]
 
             shapes = (h0, w0), ((h / h0, w / w0), pad)
                     
@@ -681,10 +697,20 @@ def load_image(self, index):
         img = cv2.imread(path)  # BGR
         assert img is not None, 'Image Not Found ' + path
         h0, w0 = img.shape[:2]  # orig hw
-        r = self.img_size / max(h0, w0)  # resize image to img_size
+        # r = self.img_size / max(h0, w0)  # resize image to img_size
         # if r != 1:  # always resize down, only resize up if training with augmentation
         #     interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
         #     img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        if min(h0, w0) <= self.img_size:
+            r = self.img_size / max(h0, w0)  # resize image to img_size
+            if r != 1:  # always resize down, only resize up if training with augmentation
+                interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
+                img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        else:
+            r = self.img_size / min(h0, w0)  # resize image to img_size
+            if r != 1:  # always resize down, only resize up if training with augmentation
+                interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
+                img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
         return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
     else:
         return self.imgs[index], self.img_hw0[index], self.img_hw[index]  # img, hw_original, hw_resized
@@ -1226,14 +1252,90 @@ def pastein(image, labels, sample_labels, sample_images, sample_masks):
     return labels
 
 
-def cropped_resize(im, labels):
-    transform = A.Compose([A.RandomCrop(height=640, width=640, p=1.0)],
+def cropped_resize(im, labels, size):
+    # transform = A.Compose([A.RandomCrop(height=640, width=640, p=1.0)],
+    #         bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels']))
+
+    transform = A.Compose([A.RandomSizedBBoxSafeCrop(size, size)],
             bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels']))
 
     new = transform(image=im, bboxes=labels[:, 1:], class_labels=labels[:, 0])  # transformed
     im, labels = new['image'], np.array([[c, *b] for c, b in zip(new['class_labels'], new['bboxes'])])
 
     return im, labels
+
+
+class BBoxSafeishHorizontalRandomCrop(DualTransform):
+    """Crop a random part of the input without loss of bboxes.
+    Args:
+        erosion_rate (float): erosion rate applied on input image height before crop.
+        p (float): probability of applying the transform. Default: 1.
+    Targets:
+        image, mask, bboxes
+    Image types:
+        uint8, float32
+    """
+
+    def __init__(self, size, erosion_rate=0.0, always_apply=False, p=1.0):
+        super(BBoxSafeishHorizontalRandomCrop, self).__init__(always_apply, p)
+        self.erosion_rate = erosion_rate
+        self.width = size
+        self.height = size
+
+    def apply(self, img, crop_height=0, crop_width=0, h_start=0, w_start=0, **params):
+        return A.augmentations.crops.functional.random_crop(img, crop_height, crop_width, h_start, w_start)
+
+    def get_params_dependent_on_targets(self, params):
+        img_h, img_w = params["image"].shape[:2]
+        crop_width = self.width
+        crop_height = self.height
+
+        if len(params["bboxes"]) == 0:  # less likely, this class is for use with bboxes.
+            erosive_h = int(img_h * (1.0 - self.erosion_rate))
+            crop_height = img_h if erosive_h >= img_h else random.randint(erosive_h, img_h)
+            return {
+                "h_start": random.random(),
+                "w_start": random.random(),
+                "crop_height": crop_height,
+                "crop_width": crop_width,
+            }
+        # get union of all bboxes
+        random_bbox_index = random.randint(0, len(params["bboxes"]) - 1)
+        x, y, x2, y2 = params["bboxes"][random_bbox_index][:4]
+        
+        # move crop window among x axis
+        normalized_crop_width = crop_width / img_w
+        normalized_bbox_width = (x2 - x)
+        max_x_delta = normalized_crop_width - normalized_bbox_width
+
+        if max_x_delta < 0.0:
+            max_x_delta = 0.0
+
+        w_start = x - random.random() * max_x_delta
+
+        if w_start < 0.0:
+            w_start = 0.0
+        
+        x2 = w_start + (crop_width / img_w)
+
+        if x2 > 1.0:
+            x2 = 1.0
+            w_start = x2 - (crop_height / img_w)
+
+        h_start = 0.0
+            
+        return {"h_start": h_start, "w_start": w_start, "crop_height": crop_height, "crop_width": crop_width}
+
+    def apply_to_bbox(self, bbox, crop_height=0, crop_width=0, h_start=0, w_start=0, rows=0, cols=0, **params):
+        return A.augmentations.crops.functional.bbox_random_crop(bbox, crop_height, crop_width, h_start, w_start, rows, cols)
+
+    @property
+    def targets_as_params(self):
+        return ["image", "bboxes"]
+
+    def get_transform_init_args_names(self):
+        return ("erosion_rate",)
+
 
 class Albumentations:
     # YOLOv5 Albumentations class (optional, only used if package is installed)
